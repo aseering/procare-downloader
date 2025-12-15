@@ -1,2 +1,4 @@
-.venv
-procare_downloads
+procare_downloads/
+
+# Settings and credentials
+.env

@@ -1,30 +1,28 @@
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait, Select
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import NoSuchElementException
-from webdriver_manager.chrome import ChromeDriverManager
-from datetime import datetime
-from selenium.webdriver.common.keys import Keys
+import os
 import platform
 import time
-import os
+from datetime import datetime
+import requests
+import tempfile
+from webdav3.client import Client as WebDavClient
 
-# Define a download directory
-DOWNLOAD_DIRECTORY = "procare_downloads"
-# Create the download directory if it doesn't exist
-if not os.path.exists(DOWNLOAD_DIRECTORY):
-    os.makedirs(DOWNLOAD_DIRECTORY)
+from dotenv import load_dotenv
+from selenium import webdriver
+from selenium.common.exceptions import NoSuchElementException
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import Select, WebDriverWait
+from webdriver_manager.chrome import ChromeDriverManager
+
+load_dotenv()
+
 
 def setup_driver():
     options = webdriver.ChromeOptions()
     options.add_argument("--headless=new")
-    # Configure Chrome to download files to the specified directory automatically
-    prefs = {"download.default_directory": os.path.abspath(DOWNLOAD_DIRECTORY)}
-    options.add_experimental_option("prefs", prefs)
-    
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
     driver.maximize_window()
@@ -33,7 +31,7 @@ def setup_driver():
 def login(driver, email, password):
     driver.get("https://schools.procareconnect.com/")
     print("Navigated to login page.")
-    
+
     # Wait for the PARENT button to be clickable and then click it
     try:
         parent_button = WebDriverWait(driver, 10).until(
@@ -87,7 +85,7 @@ def login(driver, email, password):
         # Wait for a specific element that only appears after a successful login.
         # Using a more generic selector for the main content area.
         WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.CLASS_NAME, "carer-dashboard")) 
+            EC.presence_of_element_located((By.CLASS_NAME, "carer-dashboard"))
         )
         print("Login successful!")
         return True
@@ -95,7 +93,7 @@ def login(driver, email, password):
         print("Login failed. Please check your credentials.")
         return False
 
-def download_photos(driver, mode, target_year, target_month, target_day):
+def download_photos(driver, mode, target_year, target_month, target_day, webdav_client):
     driver.get('https://schools.procareconnect.com/dashboard')
     print("Navigating to Photos/Videos section...")
     try:
@@ -203,7 +201,7 @@ def download_photos(driver, mode, target_year, target_month, target_day):
                 'Jul': '07', 'Aug': '08', 'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'
             }
             month_num = month_abbr_to_num.get(target_month, '01') # Default to 01 if not found
-            
+
             # Pad day with leading zero if necessary
             formatted_day = f"{int(target_day):02d}"
 
@@ -261,9 +259,9 @@ def download_photos(driver, mode, target_year, target_month, target_day):
             print("No 'Click to load more' button found. All photos should be loaded.")
             break # Exit the main loading loop
 
-    print("Extracting photo URLs and initiating downloads...")
+    print("Extracting photo URLs and initiating uploads...")
     photo_download_elements = driver.find_elements(By.XPATH, "//a[contains(@class, 'gallery__item-download')]")
-    
+
     # Store URLs to download later
     download_urls = []
     for element in photo_download_elements:
@@ -271,57 +269,101 @@ def download_photos(driver, mode, target_year, target_month, target_day):
         if href:
             download_urls.append(href)
 
-    print(f"Found {len(download_urls)} photos to download.")
+    print(f"Found {len(download_urls)} photos to upload.")
 
     for i, url in enumerate(download_urls):
         try:
-            driver.get(url) # Navigate directly to the image URL to trigger download
-            print(f"Downloading photo {i+1}/{len(download_urls)}: {url}")
-            time.sleep(2) # Give time for the download to initiate
+            # Get the filename from the URL
+            filename = url.split('/')[-1].split('?')[0]
+
+            # Construct the remote path
+            month_year = f"{target_month} {target_year}"
+            day = target_day if mode.lower() != "monthly" else "all"
+            
+            remote_base_path = f"/files/{os.environ.get('NEXTCLOUD_USERNAME')}/Photos/Daycare"
+            
+            month_year_path = f"{remote_base_path}/{month_year}"
+            if not webdav_client.check(month_year_path):
+                webdav_client.mkdir(month_year_path)
+
+            day_path = f"{month_year_path}/{day}"
+            if not webdav_client.check(day_path):
+                webdav_client.mkdir(day_path)
+
+            remote_path = f"{day_path}/{filename}"
+
+
+            print(f"Uploading photo {i+1}/{len(download_urls)} to {remote_path}")
+            
+            # Download the file content
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+
+            # Create a temporary file and write the content to it
+            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                temp_file.write(response.content)
+                temp_file_path = temp_file.name
+
+            # Upload the file
+            webdav_client.upload(remote_path=remote_path, local_path=temp_file_path)
+
+            # Clean up the temporary file
+            os.unlink(temp_file_path)
+
         except Exception as e:
-            print(f"Could not download photo {i+1} from {url}: {e}")
+            print(f"Could not upload photo {i+1} from {url}: {e}")
 
 if __name__ == "__main__":
     user_email = os.environ.get("PROCARE_EMAIL")
-    if not user_email:
-        user_email = input("Enter your Procare Connect email: ")
-    
     user_password = os.environ.get("PROCARE_PASSWORD")
-    if not user_password:
-        user_password = input("Enter your Procare Connect password: ")
+    mode = os.environ.get("PROCARE_MODE", "daily") # default to daily if not set
 
-    mode = os.environ.get("PROCARE_MODE")
-    if mode:
-        print(f"Using PROCARE_MODE from environment: {mode}")
-    if not mode or mode.lower() not in ["daily", "monthly"]:
-        while True:
-            mode = input("Enter mode (Daily or Monthly): ")
-            if mode.lower() in ["daily", "monthly"]:
-                break
-            print("Invalid mode. Please enter 'Daily' or 'Monthly'.")
+    now = datetime.now()
+    target_year_str = os.environ.get("PROCARE_YEAR", str(now.year))
+    target_month_str = os.environ.get("PROCARE_MONTH", now.strftime("%b")) # e.g., "Aug"
+    target_day_str = os.environ.get("PROCARE_DAY", now.strftime("%d")) # e.g., "15"
 
-    target_year_str = os.environ.get("PROCARE_YEAR")
-    if not target_year_str:
-        target_year_str = input("Enter the target year (e.g., 2024): ")
+    nextcloud_webdav_url = os.environ.get("NEXTCLOUD_WEBDAV_URL")
+    nextcloud_username = os.environ.get("NEXTCLOUD_USERNAME")
+    nextcloud_password = os.environ.get("NEXTCLOUD_PASSWORD")
 
-    target_month_str = os.environ.get("PROCARE_MONTH")
-    if not target_month_str:
-        target_month_str = input("Enter the target month (e.g., Aug, Sep, Oct): ")
-    target_day_str = None
-    if mode.lower() == "daily":
-        target_day_str = os.environ.get("PROCARE_DAY")
-        if not target_day_str:
-            target_day_str = input("Enter the target day (e.g., 15): ")
+
+    # Check for missing required environment variables
+    required_vars = {
+        "PROCARE_EMAIL": user_email,
+        "PROCARE_PASSWORD": user_password,
+        "NEXTCLOUD_WEBDAV_URL": nextcloud_webdav_url,
+        "NEXTCLOUD_USERNAME": nextcloud_username,
+        "NEXTCLOUD_PASSWORD": nextcloud_password,
+    }
+
+    if mode.lower() != "monthly":
+        required_vars["PROCARE_DAY"] = target_day_str
+
+    missing_vars = [var for var, value in required_vars.items() if not value]
+
+    if missing_vars:
+        print("Error: The following required environment variables are not set in your .env file:")
+        for var in missing_vars:
+            print(f"- {var}")
+        exit()
+
+    # Setup WebDAV client
+    webdav_options = {
+        'webdav_hostname': nextcloud_webdav_url,
+        'webdav_login':    nextcloud_username,
+        'webdav_password': nextcloud_password
+    }
+    webdav_client = WebDavClient(webdav_options)
 
     driver = setup_driver()
     try:
         if login(driver, user_email, user_password):
-            download_photos(driver, mode, target_year_str, target_month_str, target_day_str)
-            print("Photo download process complete.")
+            download_photos(driver, mode, target_year_str, target_month_str, target_day_str, webdav_client)
+            print("Photo upload process complete.")
         else:
-            print("Could not log in to download photos.")
-        
-        print(f"Downloads should be in the '{DOWNLOAD_DIRECTORY}' directory.")
+            print("Could not log in to upload photos.")
+
         print("Script finished. Browser will close.")
     finally:
         driver.quit()
