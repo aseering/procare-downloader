@@ -18,12 +18,15 @@ from selenium.webdriver.support.ui import Select, WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
 load_dotenv()
-
+SELENIUM_CHROMEDRIVER = os.getenv("SELENIUM_CHROMEDRIVER")
 
 def setup_driver():
     options = webdriver.ChromeOptions()
     options.add_argument("--headless=new")
-    service = Service(ChromeDriverManager().install())
+    if SELENIUM_CHROMEDRIVER:
+        service = Service(executable_path=SELENIUM_CHROMEDRIVER)
+    else:
+        service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
     driver.maximize_window()
     return driver
