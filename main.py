@@ -211,26 +211,7 @@ def download_content(driver, media_type, target_year, target_month, target_day, 
         except Exception as e:
             print(f"Could not upload {media_type} {i+1} from {url}: {e}")
 
-def download_media_and_videos(driver, mode, target_year, target_month, target_day, webdav_client):
-    driver.get('https://schools.procareconnect.com/dashboard')
-    print("Navigating to Photos/Videos section...")
-    try:
-        # Wait for any of the expected links to be clickable
-        photos_videos_link = WebDriverWait(driver, 30).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[.//span[text()='Photos/Videos']]"))
-        )
-        photos_videos_link.click()
-        print("Clicked 'Photos/Videos' link.")
-    except Exception as e:
-        print(f"Error navigating to Photos/Videos section: {e}")
-        return
-
-    # Wait for the page to load completely
-    WebDriverWait(driver, 30).until(
-        EC.presence_of_element_located((By.CLASS_NAME, "photo-gallery__content"))
-    )
-    time.sleep(5) # Give some extra time for initial content to render
-
+def set_date_filter(driver, mode, target_year, target_month, target_day):
     if mode.lower() == "monthly":
         print("Setting duration to 'Monthly'...")
         try:
@@ -341,6 +322,28 @@ def download_media_and_videos(driver, mode, target_year, target_month, target_da
         except Exception as e:
             print(f"Error selecting date for Daily mode: {e}")
             # Continue even if this fails
+
+def download_media_and_videos(driver, mode, target_year, target_month, target_day, webdav_client):
+    driver.get('https://schools.procareconnect.com/dashboard')
+    print("Navigating to Photos/Videos section...")
+    try:
+        # Wait for any of the expected links to be clickable
+        photos_videos_link = WebDriverWait(driver, 30).until(
+            EC.element_to_be_clickable((By.XPATH, "//button[.//span[text()='Photos/Videos']]"))
+        )
+        photos_videos_link.click()
+        print("Clicked 'Photos/Videos' link.")
+    except Exception as e:
+        print(f"Error navigating to Photos/Videos section: {e}")
+        return
+
+    # Wait for the page to load completely
+    WebDriverWait(driver, 30).until(
+        EC.presence_of_element_located((By.CLASS_NAME, "photo-gallery__content"))
+    )
+    time.sleep(5) # Give some extra time for initial content to render
+
+    set_date_filter(driver, mode, target_year, target_month, target_day)
     
     # Download Photos
     download_content(driver, "photos", target_year, target_month, target_day, webdav_client, mode)
@@ -361,6 +364,8 @@ def download_media_and_videos(driver, mode, target_year, target_month, target_da
     except Exception as e:
         print(f"Error navigating to Videos tab: {e}")
         return
+
+    set_date_filter(driver, mode, target_year, target_month, target_day)
 
     # Download Videos
     download_content(driver, "videos", target_year, target_month, target_day, webdav_client, mode)
