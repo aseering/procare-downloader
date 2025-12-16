@@ -273,7 +273,7 @@ def set_date_filter(driver, mode, target_year, target_month, target_day):
         try:
             # Click the duration dropdown
             duration_dropdown = WebDriverWait(driver, 30).until(
-                EC.presence_of_element_located((By.ID, "id3"))
+                EC.presence_of_element_located((By.XPATH, "//div[contains(@data-cy, 'date-filter')]"))
             )
             duration_dropdown.click()
 
