@@ -4,6 +4,8 @@ import time
 from datetime import datetime
 import requests
 import tempfile
+import re
+import pyrfc6266
 from webdav3.client import Client as WebDavClient
 
 from dotenv import load_dotenv
@@ -96,7 +98,120 @@ def login(driver, email, password):
         print("Login failed. Please check your credentials.")
         return False
 
-def download_photos(driver, mode, target_year, target_month, target_day, webdav_client):
+def download_content(driver, media_type, target_year, target_month, target_day, webdav_client, mode):
+    """
+    Downloads all content (photos or videos) from the current page.
+    """
+    print(f"Starting download process for {media_type}...")
+
+    # Main loop for loading all content by scrolling and clicking "load more"
+    while True:
+        # --- Inner scroll loop ---
+        print(f"Scrolling to load more {media_type}...")
+        try:
+            scrollable_element = driver.find_element(By.CLASS_NAME, "section")
+            last_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_element)
+            while True:
+                driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", scrollable_element)
+                time.sleep(2)
+                new_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_element)
+                if new_height == last_height:
+                    print("Scrolling finished for this section.")
+                    break
+                last_height = new_height
+        except NoSuchElementException:
+            print("Could not find the 'section' div to scroll.")
+            pass
+
+        # After scrolling, try to find and click the "load more" button
+        try:
+            load_more_button = driver.find_element(By.XPATH, "//button[.//span[text()='Click to load more']]")
+            print("Found 'Click to load more' button. Clicking it...")
+            load_more_button.click()
+            time.sleep(5)  # Wait for content to load after click
+            print("Continuing to next load cycle...")
+            continue
+        except NoSuchElementException:
+            print(f"No 'Click to load more' button found. All {media_type} should be loaded.")
+            break # Exit the main loading loop
+
+    print(f"Extracting {media_type} URLs and initiating uploads...")
+    download_elements = driver.find_elements(By.XPATH, "//a[contains(@class, 'gallery__item-download')]")
+
+    # Store URLs to download later
+    download_urls = set()
+    for element in download_elements:
+        href = element.get_attribute("href")
+        if href:
+            download_urls.add(href)
+
+    print(f"Found {len(download_urls)} {media_type} to upload.")
+
+    for i, url in enumerate(download_urls):
+        try:
+            # Download the file content
+            try:
+                response = requests.get(url, stream=True)
+                response.raise_for_status()
+            except Exception as e:
+                print(f"Could not download {media_type} {i+1} from {url}: {e}")
+                continue
+
+            # Get filename from content-disposition header if available
+            filename = None
+            content_disposition = response.headers.get('content-disposition')
+            if content_disposition:
+                try:
+                    parsed_headers = pyrfc6266.parse_headers(content_disposition)
+                    filename = parsed_headers.filename_sanitized
+                except (ValueError, AttributeError):
+                    pass # Fallback to URL parsing if header is malformed
+            
+            if not filename:
+                # Fallback to URL parsing if header is not present or parsing fails
+                filename = url.split('/')[-1].split('?')[0]
+
+            # Ensure the filename has an extension, default to .mp4 if not
+            if '.' not in filename:
+                filename += '.mp4'
+
+            # Construct the remote path
+            month_year = f"{target_month} {target_year}"
+            day = target_day if mode.lower() != "monthly" else "all"
+            
+            # Determine the base path based on media type
+            remote_base_path = f"/files/{os.environ.get('NEXTCLOUD_USERNAME')}/Photos/Daycare"
+            
+            month_year_path = f"{remote_base_path}/{month_year}"
+            if not webdav_client.check(month_year_path):
+                webdav_client.mkdir(month_year_path)
+
+            day_path = f"{month_year_path}/{day}"
+            if not webdav_client.check(day_path):
+                webdav_client.mkdir(day_path)
+
+            remote_path = f"{day_path}/{filename}"
+
+            print(f"Uploading {media_type} {i+1}/{len(download_urls)} to {remote_path}")
+            
+            # Create a temporary file and write the content to it
+            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                temp_file.write(response.content)
+                temp_file_path = temp_file.name
+
+            # Upload the file
+            try:
+                webdav_client.upload(remote_path=remote_path, local_path=temp_file_path)
+            except Exception as e:
+                print(f"Could not upload {media_type} {i+1} from {url}: {e}")
+
+            # Clean up the temporary file
+            os.unlink(temp_file_path)
+
+        except Exception as e:
+            print(f"Could not upload {media_type} {i+1} from {url}: {e}")
+
+def download_media_and_videos(driver, mode, target_year, target_month, target_day, webdav_client):
     driver.get('https://schools.procareconnect.com/dashboard')
     print("Navigating to Photos/Videos section...")
     try:
@@ -226,95 +341,30 @@ def download_photos(driver, mode, target_year, target_month, target_day, webdav_
         except Exception as e:
             print(f"Error selecting date for Daily mode: {e}")
             # Continue even if this fails
+    
+    # Download Photos
+    download_content(driver, "photos", target_year, target_month, target_day, webdav_client, mode)
 
-    # Main loop for loading all photos by scrolling and clicking "load more"
-    while True:
-        # --- Inner scroll loop ---
-        print("Scrolling to load more photos...")
-        try:
-            scrollable_element = driver.find_element(By.CLASS_NAME, "section")
-            last_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_element)
-            while True:
-                driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", scrollable_element)
-                time.sleep(2)
-                new_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_element)
-                if new_height == last_height:
-                    print("Scrolling finished for this section.")
-                    break
-                last_height = new_height
-        except NoSuchElementException:
-            print("Could not find the 'section' div to scroll.")
-            # If we can't find the section, we won't try to scroll it.
-            # We can still try to click the "load more" button.
-            pass
+    # Download Videos
+    print("Navigating to Videos tab...")
+    try:
+        videos_link = WebDriverWait(driver, 30).until(
+            EC.element_to_be_clickable((By.XPATH, "//a[contains(@class, 'tabbar-tab') and contains(., 'Videos')]"))
+        )
+        videos_link.click()
+        print("Clicked 'Videos' tab.")
+        # Wait for the video content to load
+        WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "photo-gallery__content"))
+        )
+        time.sleep(5)
+    except Exception as e:
+        print(f"Error navigating to Videos tab: {e}")
+        return
 
-        # After scrolling, try to find and click the "load more" button
-        try:
-            load_more_button = driver.find_element(By.XPATH, "//button[.//span[text()='Click to load more']]")
-            print("Found 'Click to load more' button. Clicking it...")
-            load_more_button.click()
-            time.sleep(5)  # Wait for photos to load after click
-            # If we found the button, we loop again to try scrolling the newly loaded content
-            print("Continuing to next load cycle...")
-            continue
-        except NoSuchElementException:
-            # If there's no "load more" button, we assume we are truly done.
-            print("No 'Click to load more' button found. All photos should be loaded.")
-            break # Exit the main loading loop
+    # Download Videos
+    download_content(driver, "videos", target_year, target_month, target_day, webdav_client, mode)
 
-    print("Extracting photo URLs and initiating uploads...")
-    photo_download_elements = driver.find_elements(By.XPATH, "//a[contains(@class, 'gallery__item-download')]")
-
-    # Store URLs to download later
-    download_urls = []
-    for element in photo_download_elements:
-        href = element.get_attribute("href")
-        if href:
-            download_urls.append(href)
-
-    print(f"Found {len(download_urls)} photos to upload.")
-
-    for i, url in enumerate(download_urls):
-        try:
-            # Get the filename from the URL
-            filename = url.split('/')[-1].split('?')[0]
-
-            # Construct the remote path
-            month_year = f"{target_month} {target_year}"
-            day = target_day if mode.lower() != "monthly" else "all"
-            
-            remote_base_path = f"/files/{os.environ.get('NEXTCLOUD_USERNAME')}/Photos/Daycare"
-            
-            month_year_path = f"{remote_base_path}/{month_year}"
-            if not webdav_client.check(month_year_path):
-                webdav_client.mkdir(month_year_path)
-
-            day_path = f"{month_year_path}/{day}"
-            if not webdav_client.check(day_path):
-                webdav_client.mkdir(day_path)
-
-            remote_path = f"{day_path}/{filename}"
-
-
-            print(f"Uploading photo {i+1}/{len(download_urls)} to {remote_path}")
-            
-            # Download the file content
-            response = requests.get(url, stream=True)
-            response.raise_for_status()
-
-            # Create a temporary file and write the content to it
-            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                temp_file.write(response.content)
-                temp_file_path = temp_file.name
-
-            # Upload the file
-            webdav_client.upload(remote_path=remote_path, local_path=temp_file_path)
-
-            # Clean up the temporary file
-            os.unlink(temp_file_path)
-
-        except Exception as e:
-            print(f"Could not upload photo {i+1} from {url}: {e}")
 
 if __name__ == "__main__":
     user_email = os.environ.get("PROCARE_EMAIL")
@@ -362,10 +412,13 @@ if __name__ == "__main__":
     driver = setup_driver()
     try:
         if login(driver, user_email, user_password):
-            download_photos(driver, mode, target_year_str, target_month_str, target_day_str, webdav_client)
-            print("Photo upload process complete.")
+            try:
+                download_media_and_videos(driver, mode, target_year_str, target_month_str, target_day_str, webdav_client)
+                print("Media upload process complete.")
+            except Exception as e:
+                print(f"An error occurred during the media upload process: {e}")
         else:
-            print("Could not log in to upload photos.")
+            print("Could not log in to upload media.")
 
         print("Script finished. Browser will close.")
     finally:
