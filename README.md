@@ -63,6 +63,23 @@ This is a Python script that automates the download of your child's photos from 
 3.  **Monitor Downloads:**
     A Chrome browser window will open, and the script will automate the login and download process. Photos will be saved to a newly created directory named `procare_downloads` in the same directory as the script.
 
+## Playground
+
+The script can also download from [Playground](https://app.tryplayground.com) instead of Procare. Set these in `.env`:
+
+```
+PROVIDER=playground        # or "procare" (the default)
+PLAYGROUND_EMAIL=...
+PLAYGROUND_PASSWORD=...
+PLAYGROUND_FIREBASE_API_KEY=...
+```
+
+`PLAYGROUND_FIREBASE_API_KEY` is Playground's public Firebase web API key, which isn't secret but is kept out of this repo: open https://app.tryplayground.com, and in its JavaScript find `productionConfig={apiKey:...}` (the key starts with `AIza`).
+
+Playground doesn't need a browser: the script signs in through the same Firebase Auth and JSON API as the Playground web app, then uploads the photos and videos posted to your child's feed on the target day (or month, with `PROCARE_MODE=monthly`) to the same NextCloud folder as Procare. The `PROCARE_YEAR`/`PROCARE_MONTH`/`PROCARE_DAY`/`PROCARE_MODE` settings apply to both providers, and `TZ` sets the time zone that decides which day a post belongs to (default `America/New_York`).
+
+Files are named `<posting time>_<Playground file name>`, and anything already in the NextCloud folder is skipped, so re-running a day only downloads what's new. Run `python main.py --dry-run` to see what would be uploaded without downloading anything.
+
 ## Important Notes
 
 -   **Browser Automation:** This script uses Selenium to control a Chrome browser. Ensure you have Google Chrome installed on your system.

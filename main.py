@@ -1,3 +1,4 @@
+import argparse
 import os
 import platform
 import time
@@ -19,6 +20,8 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
+
+import playground
 
 load_dotenv()
 SELENIUM_CHROMEDRIVER = os.getenv("SELENIUM_CHROMEDRIVER")
@@ -99,6 +102,16 @@ def login(driver, email, password):
         print("Login failed. Please check your credentials.")
         return False
 
+def nextcloud_folder(webdav_client, target_year, target_month, target_day, mode, create=True):
+    """The folder photo-mailer reads a day's media from ("all" holds a whole month's, in monthly mode)."""
+    month_year_path = f"/files/{os.environ.get('NEXTCLOUD_USERNAME')}/Photos/Daycare/{target_month} {target_year}"
+    day_path = f"{month_year_path}/{target_day if mode.lower() != 'monthly' else 'all'}"
+    if create:
+        for path in (month_year_path, day_path):
+            if not webdav_client.check(path):
+                webdav_client.mkdir(path)
+    return day_path
+
 def download_content(driver, media_type, target_year, target_month, target_day, webdav_client, mode):
     """
     Downloads all content (photos or videos) from the current page.
@@ -176,21 +189,7 @@ def download_content(driver, media_type, target_year, target_month, target_day, 
             if '.' not in filename:
                 filename += '.mp4'
 
-            # Construct the remote path
-            month_year = f"{target_month} {target_year}"
-            day = target_day if mode.lower() != "monthly" else "all"
-            
-            # Determine the base path based on media type
-            remote_base_path = f"/files/{os.environ.get('NEXTCLOUD_USERNAME')}/Photos/Daycare"
-            
-            month_year_path = f"{remote_base_path}/{month_year}"
-            if not webdav_client.check(month_year_path):
-                webdav_client.mkdir(month_year_path)
-
-            day_path = f"{month_year_path}/{day}"
-            if not webdav_client.check(day_path):
-                webdav_client.mkdir(day_path)
-
+            day_path = nextcloud_folder(webdav_client, target_year, target_month, target_day, mode)
             remote_path = f"{day_path}/{filename}"
 
             print(f"Uploading {media_type} {i+1}/{len(download_urls)} to {remote_path}")
@@ -373,12 +372,25 @@ def download_media_and_videos(driver, mode, target_year, target_month, target_da
 
 
 if __name__ == "__main__":
-    user_email = os.environ.get("PROCARE_EMAIL")
-    user_password = os.environ.get("PROCARE_PASSWORD")
+    parser = argparse.ArgumentParser(description="Copies daycare photos and videos to NextCloud.")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Playground only: list what would be uploaded, without downloading or uploading anything.")
+    args = parser.parse_args()
+
+    # Which daycare app to download from: "procare" or "playground"
+    provider = os.environ.get("PROVIDER", "procare").lower()
+    if provider not in ("procare", "playground"):
+        print(f"Error: PROVIDER must be 'procare' or 'playground', not '{provider}'.")
+        exit(1)
+    credential_prefix = provider.upper()
+    user_email = os.environ.get(f"{credential_prefix}_EMAIL")
+    user_password = os.environ.get(f"{credential_prefix}_PASSWORD")
+    # The date settings keep their PROCARE_ names for either provider; photo-mailer reads them too
     mode = os.environ.get("PROCARE_MODE", "daily") # default to daily if not set
 
     # Match photo-mailer, which reads the same TZ setting
-    now = datetime.now(ZoneInfo(os.environ.get("TZ", "America/New_York")))
+    tz = ZoneInfo(os.environ.get("TZ", "America/New_York"))
+    now = datetime.now(tz)
     target_year_str = os.environ.get("PROCARE_YEAR", str(now.year))
     target_month_str = os.environ.get("PROCARE_MONTH", now.strftime("%b")) # e.g., "Aug"
     target_day_str = os.environ.get("PROCARE_DAY", now.strftime("%d")) # e.g., "15"
@@ -390,12 +402,15 @@ if __name__ == "__main__":
 
     # Check for missing required environment variables
     required_vars = {
-        "PROCARE_EMAIL": user_email,
-        "PROCARE_PASSWORD": user_password,
+        f"{credential_prefix}_EMAIL": user_email,
+        f"{credential_prefix}_PASSWORD": user_password,
         "NEXTCLOUD_WEBDAV_URL": nextcloud_webdav_url,
         "NEXTCLOUD_USERNAME": nextcloud_username,
         "NEXTCLOUD_PASSWORD": nextcloud_password,
     }
+
+    if provider == "playground":
+        required_vars["PLAYGROUND_FIREBASE_API_KEY"] = os.environ.get("PLAYGROUND_FIREBASE_API_KEY")
 
     if mode.lower() != "monthly":
         required_vars["PROCARE_DAY"] = target_day_str
@@ -415,6 +430,18 @@ if __name__ == "__main__":
         'webdav_password': nextcloud_password
     }
     webdav_client = WebDavClient(webdav_options)
+
+    if provider == "playground":
+        try:
+            start, end = playground.date_range(mode, target_year_str, target_month_str, target_day_str, tz)
+            remote_folder = nextcloud_folder(webdav_client, target_year_str, target_month_str, target_day_str, mode,
+                                             create=not args.dry_run)
+            playground.download_media(user_email, user_password, start, end, tz, webdav_client, remote_folder,
+                                      dry_run=args.dry_run)
+            print("Media upload process complete.")
+        except Exception as e:
+            print(f"An error occurred during the media upload process: {e}")
+        exit()
 
     driver = setup_driver()
     try:

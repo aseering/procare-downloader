@@ -3,3 +3,4 @@ webdriver-manager
 python-dotenv
 webdavclient3
 pyrfc6266
+requests

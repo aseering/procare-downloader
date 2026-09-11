@@ -5,3 +5,4 @@ procare_downloads/
 
 # Python virtualenv
 .venv/
+__pycache__/
