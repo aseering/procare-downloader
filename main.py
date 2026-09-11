@@ -427,7 +427,9 @@ if __name__ == "__main__":
     webdav_options = {
         'webdav_hostname': nextcloud_webdav_url,
         'webdav_login':    nextcloud_username,
-        'webdav_password': nextcloud_password
+        'webdav_password': nextcloud_password,
+        # NextCloud can take well over the default 30s to acknowledge a large video upload
+        'webdav_timeout': 300,
     }
     webdav_client = WebDavClient(webdav_options)
 
