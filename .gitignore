@@ -2,3 +2,6 @@ procare_downloads/
 
 # Settings and credentials
 .env
+
+# Python virtualenv
+.venv/
