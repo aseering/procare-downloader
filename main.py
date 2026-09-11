@@ -377,7 +377,8 @@ if __name__ == "__main__":
     user_password = os.environ.get("PROCARE_PASSWORD")
     mode = os.environ.get("PROCARE_MODE", "daily") # default to daily if not set
 
-    now = datetime.now(ZoneInfo(key='America/New_York'))
+    # Match photo-mailer, which reads the same TZ setting
+    now = datetime.now(ZoneInfo(os.environ.get("TZ", "America/New_York")))
     target_year_str = os.environ.get("PROCARE_YEAR", str(now.year))
     target_month_str = os.environ.get("PROCARE_MONTH", now.strftime("%b")) # e.g., "Aug"
     target_day_str = os.environ.get("PROCARE_DAY", now.strftime("%d")) # e.g., "15"
