@@ -11,6 +11,7 @@ import requests
 
 # Public web-app configuration, from the JS bundle served by app.tryplayground.com
 API_URL = "https://api.tryplayground.com/api"
+AUTH_URL = "https://auth.tryplayground.com/api"
 WEB_APP_URL = "https://app.tryplayground.com"
 # The API sits behind Cloudflare, which rejects requests that don't look like the web app's
 BROWSER_HEADERS = {
@@ -43,9 +44,41 @@ class PlaygroundClient:
         mapping = self._request("POST", "/public/account", json={"authId": auth["localId"]})
         self.school_id = mapping["schoolId"]
         self.account_id = mapping["accountId"]
-        self.session.headers["Authorization"] = f"Bearer {auth['idToken']}"
+        self.session.headers["Authorization"] = f"Bearer {self._actor_token(auth['idToken'], api_key)}"
         self.session.headers["accountid"] = self.account_id
         print("Logged in to Playground.")
+
+    def _actor_token(self, id_token, api_key):
+        """Trades the sign-in token for one that names the acting school and account.
+
+        Since 2026-09-22 the API answers "Invalid session token" (HTTP 401) to a plain
+        Firebase sign-in token on most endpoints, /posts among them. It wants an ID token
+        whose custom claims name the actor. The web app gets one the same way: ask the auth
+        service for a Firebase custom token, then sign in again with that.
+        """
+        actor = {"schoolId": self.school_id, "accountId": self.account_id}
+        response = self.session.post(
+            f"{AUTH_URL}/auth/exchange/customToken",
+            params={"origin": "web"},
+            headers={"Authorization": f"Bearer {id_token}", "Content-Type": "application/json"},
+            json={"actor": actor},
+            timeout=30,
+        )
+        if not response.ok:
+            # Keep working if they ever relax this again; the caller will fail loudly if not.
+            print(f"Warning: actor token exchange failed ({response.status_code}); "
+                  "falling back to the sign-in token.")
+            return id_token
+        custom_token = response.json()["token"]
+
+        exchanged = self.session.post(
+            f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key={api_key}",
+            json={"token": custom_token, "returnSecureToken": True},
+            timeout=30,
+        )
+        if not exchanged.ok:
+            raise RuntimeError(f"Playground custom-token sign-in failed: {exchanged.text[:200]}")
+        return exchanged.json()["idToken"]
 
     def _request(self, method, path, params=None, **kwargs):
         response = self.session.request(
