@@ -442,7 +442,10 @@ if __name__ == "__main__":
                                       dry_run=args.dry_run)
             print("Media upload process complete.")
         except Exception as e:
+            # Exit non-zero so the nightly wrapper mails the failure instead of carrying on
+            # quietly; a broken download looked like a quiet day for four days in Oct 2026.
             print(f"An error occurred during the media upload process: {e}")
+            exit(1)
         exit()
 
     driver = setup_driver()
@@ -453,8 +456,10 @@ if __name__ == "__main__":
                 print("Media upload process complete.")
             except Exception as e:
                 print(f"An error occurred during the media upload process: {e}")
+                exit(1)
         else:
             print("Could not log in to upload media.")
+            exit(1)
 
         print("Script finished. Browser will close.")
     finally:
